@@ -1,0 +1,1255 @@
+---
+title: "Staphylome - 16S rRNA gene sequence analysis"
+author: Anna Ingham, Statens Serum Institut, Copenhagen
+date: "August 2020"
+editor_options: 
+  chunk_output_type: inline
+output: 
+  pdf_document: 
+    highlight: kate
+    toc_depth: 1
+  html_document: 
+    df_print: kable
+    toc: yes
+    toc_depth: 2
+---
+
+```{r}
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=55), tidy=TRUE) #to ensure line breaks in pdf output
+```
+
+
+## Load packages
+```{r include=FALSE}
+library(phyloseq); packageVersion("phyloseq")
+library(ggplot2); packageVersion("ggplot2")
+library(dplyr); packageVersion("dplyr")
+library(tibble); packageVersion("tibble")
+library(decontam); packageVersion("decontam")
+library(Biostrings); packageVersion("Biostrings")
+library(vegan); packageVersion("vegan")
+library(openxlsx)
+library(tidyr)
+library(reshape2)
+library(gplots)
+library(genefilter)
+library(M3C)
+library(pals)
+library(wesanderson)
+library(ranacapa)
+theme_set(theme_bw())
+```
+
+
+
+## Read in phyloseq object
+```{r}
+ps1 <- readRDS("phyloseq_objects_for_publication/phy_obj_16S.RData")
+ps1
+```
+
+
+
+## Summary of read counts per sample
+```{r}
+print("16S before contaminant removal: ")
+
+print("All: ")
+summary(sample_sums(ps1))
+
+print("Nose: ")
+summary(sample_sums(ps1)[sample_data(ps1)$Sample_type == "Nose"])
+
+print("Groin: ")
+summary(sample_sums(ps1)[sample_data(ps1)$Sample_type == "Groin"])
+
+print("OP site: ")
+summary(sample_sums(ps1)[sample_data(ps1)$Sample_type == "Operation_site"])
+```
+
+
+## How does the sequencing depth look before decontam?
+```{r}
+sdt = data.table::data.table(as(sample_data(ps1), "data.frame"),
+                 TotalReads = sample_sums(ps1), keep.rownames = TRUE)
+data.table::setnames(sdt, "rn", "SampleID")
+pSeqDepth = ggplot(sdt, aes(TotalReads)) + geom_histogram(binwidth = 250) +  geom_vline(xintercept = 5000, color= "red") + annotate("text", label = nrow(sdt[sdt$TotalReads<5000]), x = 0, y = 8, size = 4, colour = "black") + ggtitle("Sequencing depth") + theme(plot.title = element_text(size = 14, face = "bold"))
+```
+
+```{r, fig.width=6}
+pSeqDepth
+```
+
+
+## 107 samples are already now below 5000 reads
+
+
+## **DECONTAM**
+
+We do this for all body sites together, because the extractions were done together and nose and skin do not differ so much in biomass as e.g. feces would do.
+
+
+## Contaminants identified by prevalence method
+### Threshold 0.5 removes all contaminant ASVs that are more prevalent in controls than in samples
+```{r}
+sample_data(ps1)$is.neg <- sample_data(ps1)$Sample_type %in% c("Extraction_control")
+contamdf.prev <- isContaminant(ps1, method="prevalence", neg="is.neg", threshold=0.5)
+table(contamdf.prev$contaminant)
+```
+
+### 48 contaminants identified
+
+
+## Who are they? 
+```{r}
+ps.contam <- prune_taxa(contamdf.prev$contaminant, ps1)
+ps.contam
+tax_table(ps.contam)
+```
+
+### How abundant are the identified contaminants in the controls vs samples?
+```{r fig.height=10, fig.width=6}
+ps1
+ps1_contam <- prune_taxa(contamdf.prev$contaminant, ps1)
+ps1_contam
+
+ps1_contam_df <- psmelt(ps1_contam)
+
+gens <- c("g__Moraxella", "g__Corynebacterium", "g__Anaerococcus", "g__Enterococcus", "g__Staphylococcus", "g__Pseudomonas")
+
+ggplot(data = ps1_contam_df[ps1_contam_df$Genus %in% gens,], aes(x=Sample, y=Abundance, fill=Genus)) +
+  geom_bar(stat = "identity", width = 1) + 
+  # scale_fill_manual(values = getPalette(colourCount)) +
+  theme(axis.title.x = element_blank(), axis.ticks.x=element_blank(), axis.text.x = element_text(angle = 90), legend.position = "bottom", strip.background =element_rect(fill="white"), strip.text.x = element_text(size=10, face = "bold")) +  guides(fill=guide_legend(nrow=2)) + facet_grid(OTU~Sample_type, scales="free")
+```
+
+
+
+### Remove the contaminants identified with prevalence method except for those belonging to the genera Moraxella, Staphylococcus, Anaerococcus, Enterococcus, and Corynebacterium
+```{r}
+gens1 <- c("g__Moraxella", "g__Corynebacterium", "g__Anaerococcus", "g__Enterococcus", "g__Staphylococcus")
+
+ps1_contam
+ps1_contam1 <- subset_taxa(ps1_contam, ! Genus %in% gens1)
+ps1_contam1
+
+ps1
+ps1_clean <- prune_taxa(!taxa_names(ps1) %in% taxa_names(ps1_contam1), ps1)
+ps1_clean
+```
+
+
+### Exclude controls
+```{r}
+ps1_clean <- prune_samples(!sample_data(ps1_clean)$Sample_type == "Extraction_control", ps1_clean)
+ps1_clean <- prune_taxa(taxa_sums(ps1_clean) != 0, ps1_clean)
+ps1_clean
+```
+
+
+```{r}
+summary(sample_sums(ps1_clean))
+```
+
+## How does the sequencing depth look after decontam?
+```{r}
+sdt = data.table::data.table(as(sample_data(ps1_clean), "data.frame"),
+                 TotalReads = sample_sums(ps1_clean), keep.rownames = TRUE)
+data.table::setnames(sdt, "rn", "SampleID")
+pSeqDepth = ggplot(sdt, aes(TotalReads)) + geom_histogram(binwidth = 250) +  geom_vline(xintercept = 5000, color= "red") + annotate("text", label = nrow(sdt[sdt$TotalReads<5000]), x = 2000, y = 15, size = 4, colour = "black") + ggtitle("Sequencing depth") + theme(plot.title = element_text(size = 14, face = "bold"))
+```
+
+```{r fig.width=6}
+pSeqDepth
+```
+
+
+### 153 samples are now below 5000 reads
+
+
+## Exclude remaining environmental contaminants manually (and those not classified to at least Order-level)
+```{r}
+#unique(tax_table(ps1_clean)[,"Order"])
+ps1_clean <- subset_taxa(ps1_clean, (Order!="NA"))
+#unique(tax_table(ps1_clean)[,"Order"])                              
+                               
+#unique(tax_table(ps1_clean)[,"Kingdom"])
+ps1_clean <- subset_taxa(ps1_clean, (Kingdom!= "d__Archaea"))
+#unique(tax_table(ps1_clean)[,"Kingdom"])
+
+#unique(tax_table(ps1_clean)[,"Phylum"])
+ps1_clean <- subset_taxa(ps1_clean, (Phylum!="p__Cyanobacteria_Chloroplast" & Phylum!= "p__Chloroflexi" & Phylum!= "p__Deinococcus-Thermus" & Phylum!= "p__Planctomycetes"))
+#unique(tax_table(ps1_clean)[,"Phylum"])
+
+#unique(tax_table(ps1_clean)[,"Class"])
+
+#unique(tax_table(ps1_clean)[,"Order"])
+ps1_clean <- subset_taxa(ps1_clean, (Order!="o__(Rhodospirillales_92%_Caulobacterales_4%_Sphingomonadales_4%)" & Order!="o__Rhizobiales" & Order!="o__Rhodobacterales" & Order!="o__Rhodospirillales" & Order!="o__Rickettsiales" & Order!="o__Rhodocyclales" & Order!="o__Oceanospirillales"))
+#unique(tax_table(ps1_clean)[,"Order"])
+
+#unique(tax_table(ps1_clean)[,"Genus"])
+ps1_clean <- subset_taxa(ps1_clean, (Genus!="g__Ralstonia" & Genus!="g__Burkholderia"))
+#unique(tax_table(ps1_clean)[,"Genus"])
+
+ps1_clean
+```
+
+
+## I excluded the following taxa manually:
+
+Those which were not classified to more than "Class" level
+
+"d__Archaea"
+
+"p__Cyanobacteria_Chloroplast"
+
+"p__Chloroflexi"
+
+"p__Deinococcus-Thermus"
+
+"p__Planctomycetes"
+
+"o__(Rhodospirillales_92%_Caulobacterales_4%_Sphingomonadales_4%)"
+
+"o__Rhizobiales" 
+
+"o__Rhodobacterales"
+
+"o__Rhodospirillales"
+
+"o__Rickettsiales"
+
+"o__Rhodocyclales"
+
+"o__Oceanospirillales"
+
+"g__Ralstonia" (the remaining ones that were not found by decontam)
+
+"g__Burkholderia" (the remaining ones that were not found by decontam)
+
+### 213 additional OTUs removed
+
+
+
+
+## Summary of read counts per sample after decontam
+```{r}
+print("16S after contaminant removal: ")
+
+print("All: ")
+summary(sample_sums(ps1_clean))
+
+print("Nose: ")
+summary(sample_sums(ps1_clean)[sample_data(ps1_clean)$Sample_type == "Nose"])
+
+print("Groin: ")
+summary(sample_sums(ps1_clean)[sample_data(ps1_clean)$Sample_type == "Groin"])
+
+print("OP site: ")
+summary(sample_sums(ps1_clean)[sample_data(ps1_clean)$Sample_type == "Operation_site"])
+```
+
+## How does the sequencing depth look after additional manual decontam?
+```{r}
+sdt = data.table::data.table(as(sample_data(ps1_clean), "data.frame"),
+                 TotalReads = sample_sums(ps1_clean), keep.rownames = TRUE)
+data.table::setnames(sdt, "rn", "SampleID")
+pSeqDepth = ggplot(sdt, aes(TotalReads)) + geom_histogram(binwidth = 250) +  geom_vline(xintercept = 5000, color= "red") + annotate("text", label = nrow(sdt[sdt$TotalReads<5000]), x = 2000, y = 12, size = 4, colour = "black") + ggtitle("Sequencing depth") + theme(plot.title = element_text(size = 14, face = "bold"))
+```
+
+```{r, fig.width=6}
+pSeqDepth
+```
+
+### 180 samples are now below 5000 reads
+
+## How many are below 2000?
+```{r}
+sdt = data.table::data.table(as(sample_data(ps1_clean), "data.frame"),
+                 TotalReads = sample_sums(ps1_clean), keep.rownames = TRUE)
+data.table::setnames(sdt, "rn", "SampleID")
+pSeqDepth = ggplot(sdt, aes(TotalReads)) + geom_histogram(binwidth = 250) +  geom_vline(xintercept = 2000, color= "red") + annotate("text", label = nrow(sdt[sdt$TotalReads<2000]), x = -1000, y = 12, size = 4, colour = "black") + ggtitle("Sequencing depth") + theme(plot.title = element_text(size = 14, face = "bold"))
+```
+
+```{r fig.width=6}
+pSeqDepth
+```
+
+## 108 samples are < 2000 reads 
+
+
+
+
+
+# **Split by body site** 
+
+## **Nose**
+```{r}
+ps1_clean_nose <- prune_samples(sample_data(ps1_clean)$Sample_type == "Nose", ps1_clean) 
+ps1_clean_nose <- prune_taxa(taxa_sums(ps1_clean_nose) != 0, ps1_clean_nose)
+ps1_clean_nose
+sample_data(ps1_clean_nose)$Sample_type
+```
+
+## Number of patients with nose samples overall
+```{r}
+length(unique(sample_data(ps1_clean_nose)$Patient_ID))
+```
+
+## Which patients have both, a before and an after sample from the nose
+```{r}
+table(sample_data(ps1_clean_nose)$Patient_ID)
+```
+
+## Exclude 3 patients with only one time point
+```{r }
+ps1_clean_nose <- prune_samples(!sample_data(ps1_clean_nose)$Patient_ID %in% c("P23","P33", "P74"), ps1_clean_nose) 
+ps1_clean_nose
+table(sample_data(ps1_clean_nose)$Patient_ID)
+```
+
+## How many patients left with both a before and and after sample?
+```{r}
+length(unique(sample_data(ps1_clean_nose)$Patient_ID))
+```
+
+## How many samples have below 1000 / 2000 / 5000 reads? 
+```{r}
+sdt = data.table::data.table(as(sample_data(ps1_clean_nose), "data.frame"),
+                 TotalReads = sample_sums(ps1_clean_nose), keep.rownames = TRUE)
+data.table::setnames(sdt, "rn", "SampleID")
+pSeqDepth = ggplot(sdt, aes(TotalReads)) + geom_histogram(binwidth = 250) +  geom_vline(xintercept = 5000, color= "red") + geom_text(aes(x=4550, label = paste("<5000: ",nrow(sdt[sdt$TotalReads<5000])), y=5.5), colour="red", angle=90) +   geom_text(aes(x=1550, label = paste("<2000: ",nrow(sdt[sdt$TotalReads<2000])), y=5.5), colour="orange", angle=90) +
+geom_text(aes(x=0, label = paste("<1000: ",nrow(sdt[sdt$TotalReads<1000])), y=5.5), colour="purple", angle=90) +
+geom_text(aes(x=10000, label = paste(">2000: ",nrow(sdt[sdt$TotalReads>2000])), y=5.5), colour="black", angle=90) +  
+geom_text(aes(x=15000, label = paste(">5000: ",nrow(sdt[sdt$TotalReads>5000])), y=5.5), colour="black", angle=90) +  
+geom_vline(xintercept = 2000, color= "orange") + geom_vline(xintercept = 1000, color= "purple") + ggtitle("Sequencing depth NOSE") + theme(plot.title = element_text(size = 14, face = "bold")) 
+```
+
+```{r}
+pSeqDepth
+```
+
+
+
+### Do the rarefaction curves justify that we remove samples with reads <1000 / <2000?
+
+##### Rarefaction curves
+```{r include=FALSE}
+set.seed(123)
+p1 <- ggrare(ps1_clean_nose, step = 100, se = FALSE, label = "Sample") 
+```
+
+```{r, fig.height=5, fig.width=8}
+p1 <- p1 + theme(panel.background = element_blank(), axis.title.x = element_text(size =14, face = "bold"), axis.title.y = element_text(size =14, face = "bold"), axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 12), legend.title = element_text(size = 16, face = "bold"), legend.text = element_text(size = 16), strip.text.x = element_text(angle = 0, face = "bold", size = 12), strip.background =element_rect(fill="white")) + xlab("Post-QC Post-contaminat removal library size per sample") + ylab("# of observed ASVs") + geom_vline(xintercept=5000, color = "red", size = 0.8) + geom_vline(xintercept=2000, color = "orange", size = 0.8) + geom_vline(xintercept=1000, color = "purple", size = 0.8) + geom_text(aes(x=4550, label="5000", y=120), colour="red", angle=90, size = 4) + geom_text(aes(x=1550, label="2000", y=120), colour="orange", angle=90, size = 4) + geom_text(aes(x=550, label="1000", y=120), colour="purple", angle=90, size = 4)
+p1
+```
+
+### Zoom
+```{r, fig.height=5, fig.width=8}
+p1 + xlim(0,10000)
+```
+
+
+## How do the rarefaction curves look on genus level? 
+##### Rarefaction curves
+```{r include=FALSE}
+ps1_clean_nose_gen <- tax_glom(ps1_clean_nose, taxrank="Genus")
+ps1_clean_nose_gen
+ps1_clean_nose_gen <- prune_taxa(taxa_sums(ps1_clean_nose_gen) != 0, ps1_clean_nose_gen)
+set.seed(123)
+p2 <- ggrare(ps1_clean_nose_gen, step = 100, se = FALSE, label = "Sample") 
+```
+
+```{r, fig.height=5, fig.width=8}
+p2 <- p2 + theme(panel.background = element_blank(), axis.title.x = element_text(size =14, face = "bold"), axis.title.y = element_text(size =14, face = "bold"), axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 12), legend.title = element_text(size = 16, face = "bold"), legend.text = element_text(size = 16), strip.text.x = element_text(angle = 0, face = "bold", size = 12), strip.background =element_rect(fill="white")) + xlab("Post-QC Post-contaminat removal library size per sample") + ylab("# of observed genera") + geom_vline(xintercept=5000, color = "red", size = 0.8) + geom_vline(xintercept=2000, color = "orange", size = 0.8) + geom_vline(xintercept=1000, color = "purple", size = 0.8) + geom_text(aes(x=4550, label="5000", y=80), colour="red", angle=90, size = 4) + geom_text(aes(x=1550, label="2000", y=80), colour="orange", angle=90, size = 4) + geom_text(aes(x=550, label="1000", y=80), colour="purple", angle=90, size = 4) 
+p2
+```
+
+### Zoom
+```{r, fig.height=5, fig.width=8}
+p2 + xlim(0,10000)
+```
+
+
+
+
+## Exclude samples with <2000 reads
+```{r}
+summary(sample_sums(ps1_clean_nose))
+ps1_clean_nose_tu <- prune_samples(!sample_sums(ps1_clean_nose) <2000, ps1_clean_nose) 
+ps1_clean_nose_tu
+summary(sample_sums(ps1_clean_nose_tu))
+```
+
+## Now how many patients still have both time points left after removing samples with <2000 reads?
+```{r }
+table(sample_data(ps1_clean_nose_tu)$Patient_ID)
+length(unique(sample_data(ps1_clean_nose_tu)$Patient_ID))
+```
+
+
+```{r }
+ps1_clean_nose_tu <- prune_samples(!sample_data(ps1_clean_nose_tu)$Patient_ID %in% c("P06", "P17", "P22", "P29", "P42", "P46", "P55", "P65", "P69", "P75", "P80", "P82"), ps1_clean_nose_tu) 
+ps1_clean_nose_tu
+```
+
+```{r}
+length(unique(sample_data(ps1_clean_nose_tu)$Patient_ID))
+```
+
+## 59 patients left with 2 time points
+
+#### Read counts in the remaining patients with 2 samples >2000 reads
+```{r}
+summary(sample_sums(ps1_clean_nose_tu))
+```
+
+
+## Alpha diversity
+```{r}
+#### Add diversity measures to the phyloseq object as variables
+alpha_div_raw <- estimate_richness(ps1_clean_nose_tu, measures=c("Observed", "Chao1", "Shannon", "InvSimpson")) 
+rownames(alpha_div_raw) <- gsub("X", "", rownames(alpha_div_raw))
+ps1_clean_nose_tu <- merge_phyloseq(ps1_clean_nose_tu, sample_data(alpha_div_raw))
+df_ps1_clean_nose_tu <- as(sample_data(ps1_clean_nose_tu), "data.frame")
+```
+
+
+### Shannon diversity over time: 
+```{r}
+plot_g_Shannon <- ggplot(df_ps1_clean_nose_tu, aes(x = time_point, y = Shannon, fill=time_point)) + geom_boxplot(outlier.color="NA", alpha = 0.75) +  geom_dotplot(binaxis = "y", stackdir = "center", alpha = 0.9, position=position_dodge(0.75), dotsize = 0.75) + theme(axis.title.y = element_text(size=12, face = "bold"), axis.text.y = element_text(size=16), axis.text.x = element_text(size=14, face = "bold", angle = 0), axis.title.x = element_text(size=12, face = "bold"), legend.position = "none", panel.grid.major = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"), strip.text.x = element_text(angle = 0, face = "bold", size = 12), strip.text.y = element_text(angle = 0, face = "bold", size = 12), strip.background =element_rect(fill="white"), title = element_text(size = 14, face = "bold"))  + stat_boxplot(geom ='errorbar') + scale_fill_manual(values = c("#88a954","#2b5000")) + ggtitle("Alpha diversity - nose") 
+plot_g_Shannon
+
+
+ggsave(filename="plots/Nose_alpha_div_16S.pdf", 
+       plot = plot_g_Shannon, 
+       device = cairo_pdf, 
+       width = 297, 
+       height = 210, 
+       units = "mm")
+```
+
+
+#### Paired Wilcoxon signed rank test 
+```{r}
+df_ps1_clean_nose_tu_c <- dcast(df_ps1_clean_nose_tu, Patient_ID ~ time_point, value.var = "Shannon", drop = FALSE)
+wilcox.test(df_ps1_clean_nose_tu_c$A_before, df_ps1_clean_nose_tu_c$B_after, paired = TRUE)
+```
+No significant change in alpha diversity in the nose.
+
+
+## Agglomerate on Genus level
+```{r }
+ps1_clean_nose_tu_gs <- tax_glom(ps1_clean_nose_tu, taxrank="Genus")
+ps1_clean_nose_tu_gs
+ps1_clean_nose_tu_gs <- prune_taxa(taxa_sums(ps1_clean_nose_tu_gs) != 0, ps1_clean_nose_tu_gs)
+ps1_clean_nose_tu_gs
+```
+
+
+
+## Convert to relative abundance 
+```{r }
+ps1_clean_nose_tu_gs_rel  = transform_sample_counts(ps1_clean_nose_tu_gs, function(x) x / sum(x))
+summary(sample_sums(ps1_clean_nose_tu_gs_rel))
+```
+
+
+## Subset top 10 genera
+```{r }
+Genus10 = names(sort(taxa_sums(ps1_clean_nose_tu_gs_rel), TRUE)[1:10])
+```
+
+## to data frame
+```{r }
+p_df_o <- psmelt(ps1_clean_nose_tu_gs_rel)
+p_df_o$Genus <- as.character(p_df_o$Genus)
+p_df_o$Genus[!(p_df_o$OTU %in% Genus10)] <- "Other"
+```
+
+
+
+### Barplots of relative abundance
+#### The patients are not in the same order here as in the heatmap, because in the heatmap they are ordered by clustering and here just by number (see ordered version below)
+
+```{r}
+mycols <- c("g__Citrobacter" = "#79301F" ,"g__Corynebacterium" = "#F2AD00", "g__Dolosigranulum" = "#FF0000", "g__Escherichia" = "#F98400", "g__Klebsiella" = "#5BBCD6", "g__Moraxella" ="#00A08A", "g__Propionibacterium" =  "#FA796C",  "g__Proteus" = "#AC3E3F", "g__Staphylococcus" = "#0F52BA", "g__Streptococcus" = "#D67236" , "Other" = "grey", "g__Anaerococcus" = "#79402E", "g__Enterococcus" = "#9986A5", "g__Finegoldia" = "#CCBA72", "g__Morganella" = "#0F0D0E", "g__Porphyromonas" = "#0B775E", "g__Pseudomonas" = "#35274A")
+```  
+
+
+```{r}
+a <- ggplot(p_df_o, aes(x=Patient_ID, y=Abundance, fill=Genus)) + geom_bar(stat = "identity", width = 0.9) + facet_grid(time_point~., scales = "free") +  scale_fill_manual(values = mycols) +  theme(axis.title.x = element_blank(), axis.ticks.x=element_blank(), axis.text.x = element_text(angle = 90, vjust=0.5), strip.background =element_rect(fill="white"), strip.text.y=element_text(size=10, face = "bold")) + ylab("Relative abundance") + ggtitle("Nose")
+a 
+```
+
+#### Patient-wise plots
+```{r}
+ggplot(p_df_o, aes(x=time_point, y=Abundance, fill=Genus)) + geom_bar(stat = "identity", width = 0.9) + facet_wrap(.~Patient_ID, nrow=5) +  scale_fill_manual(values = mycols)  +  theme(axis.title.x = element_blank(), axis.ticks.x=element_blank(), axis.text.x = element_text(angle = 90, vjust=0.5), strip.background =element_rect(fill="white"), strip.text.y=element_text(size=10, face = "bold"), legend.position = "bottom") + ylab("Relative abundance")  + ggtitle("Nose")
+```
+
+
+### Subset the top 10 genera (without other)
+```{r}
+ps1_clean_nose_tu_gs_rel <- prune_taxa(taxa_names(ps1_clean_nose_tu_gs_rel) %in% Genus10, ps1_clean_nose_tu_gs_rel)
+ps1_clean_nose_tu_gs_rel
+```
+
+
+## to data frame
+```{r}
+p_df <- psmelt(ps1_clean_nose_tu_gs_rel)
+p_df_d <- dcast(p_df, Patient_ID + Genus ~ time_point, value.var = "Abundance", drop = FALSE)
+```
+
+## Calculate relative change in each patient for each species
+```{r}
+p_df_d <- p_df_d %>%  mutate(Percent_point_change = B_after - A_before)
+p_df_d$Percent_point_change  <- p_df_d$Percent_point_change*100
+```
+
+## to matrix
+```{r}
+p_df_d_m <- acast(p_df_d[,c(1,2,5)], Genus ~ Patient_ID, value.var = "Percent_point_change")
+```
+
+
+## Visualize in a heatmap
+```{r}
+pdf(file="plots/Nose_heatmap.pdf", width =  11.69 , height = 8.27)
+
+heatmap.2(p_df_d_m, scale = "none", col = bluered(100), trace = "none", density.info = "histogram", margin=c(6, 15), cexRow = 1.5, cexCol = 1, adjCol = 1, key.xlab = "Relative abundance change \nin percent points", keysize = 0.7, key.title = NA, main = "NOSE") 
+
+dev.off()
+```
+
+
+
+### Which of the top 10 genera do significantly change from before to after? 
+(Paired Wilcoxon test)
+```{r, warning=FALSE}
+wilc_df <- p_df_d %>% group_by(Genus) %>% summarise(wilcox_p_value=wilcox.test(A_before, B_after, paired=TRUE)$p.value) 
+
+wilc_df$BH_adjusted_wilcox_p_value <- p.adjust(wilc_df$wilcox_p_value, method = "BH")
+
+wilc_df
+```
+
+Dolosigranulum and Streptococcus have a significant _overall_ change in the nose.
+After multiple testing correction (Benjamini-Hochberg), only Dolosigranulum is still significant.
+
+#### Do they _overall_ decrease or increase?
+```{r}
+p_df_d %>% group_by(Genus) %>% summarise(Mean_percent_point_change = mean(B_after) - mean(A_before))
+```
+
+Dolosigranulum decreases and Streptococcus increases _overall_ in the nose.
+
+
+### Combine with tuf data:
+### Does change in the genus Staphylococcus correlate with change in individual Staph species?
+
+```{r}
+p_df_d_STAPH <- p_df_d %>% select(Patient_ID, Genus, Percent_point_change) %>% filter(Genus == "g__Staphylococcus") %>% select(Patient_ID, Percent_point_change) %>% dplyr::rename(g__Staphylococcus_percent_point_change=Percent_point_change)
+dim(p_df_d_STAPH)
+```
+
+
+```{r}
+p_df_d_tuf_nose <- read.table(file = "tables/p_df_d_tuf_nose.csv", sep=";", header=TRUE)
+p_df_d_tuf_nose <- p_df_d_tuf_nose %>% rename_at(vars(Staphylococcus_aureus:Staphylococcus_warneri), function(x){paste0(x,"_percent_point_change")})
+dim(p_df_d_tuf_nose)
+
+## Subset to the same patients for which we have 16S data
+p_df_d_tuf_nose <- p_df_d_tuf_nose[p_df_d_tuf_nose$Patient_ID %in% p_df_d_STAPH$Patient_ID,]
+dim(p_df_d_tuf_nose)
+
+p_df_d_STAPH <- p_df_d_STAPH[p_df_d_STAPH$Patient_ID %in% p_df_d_tuf_nose$Patient_ID,]
+```
+
+```{r}
+p_df_d_STAPH1 <- left_join(p_df_d_STAPH, p_df_d_tuf_nose, by = "Patient_ID")
+dim(p_df_d_STAPH1)
+```
+
+#### For those patients that both have 16S and tuf data:
+
+#### Test Staph genus correlation with all Staph species:
+```{r}
+p_df_d_STAPH2 <- p_df_d_STAPH1 %>% pivot_longer(cols = starts_with("Staphylococcus"), names_to = "Species", values_to = "Percent_point_change")
+
+test_res <- p_df_d_STAPH2 %>% group_by(Species) %>% group_modify(~ broom::tidy(cor.test(~ g__Staphylococcus_percent_point_change + Percent_point_change, data = .x)))
+
+test_res$BH_adjusted_p_value <- p.adjust(test_res$p.value, method = "BH")
+test_res
+```
+
+Estimate is the Pearson's correlation coefficient. 
+
+```{r}
+test_res1 <- as.data.frame(test_res[,c("Species", "estimate", "BH_adjusted_p_value")])
+
+p_df_d_STAPH2 <- dplyr::left_join(p_df_d_STAPH2, test_res, by="Species")
+p_df_d_STAPH2 <- as.data.frame(p_df_d_STAPH2)
+
+
+p_df_d_STAPH2 <- p_df_d_STAPH2 %>% mutate_at(vars(BH_adjusted_p_value, estimate), round, 3)
+
+plots <- p_df_d_STAPH2 %>% group_by(Species) %>% do(plots=ggplot(data=.) +
+         aes(x=g__Staphylococcus_percent_point_change, y=Percent_point_change) +
+           ggtitle(paste0(unique(.$Species),", adj p = ",unique(.$BH_adjusted_p_value),", rho = ",unique(.$estimate))) +
+           geom_point() +
+           geom_smooth(method = "lm", se = FALSE) + geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+           theme(plot.title = element_text(size = 10)) +
+           geom_hline(yintercept = 0, color = "red", linetype = "dashed"))
+plots$plots
+
+pdf("plots/Staph_correlations_nose.pdf")
+for (i in 1:10) {
+    print(plots$plots[[i]])
+}
+dev.off()
+```
+
+
+
+
+#### Make a version of the barplots that has the same order of patients as the heatmap
+```{r include=FALSE}
+hmm <- heatmap.2(p_df_d_m)
+```
+
+```{r}
+positions <- rownames(hmm$carpet)
+
+a <- ggplot(p_df_o, aes(x=Patient_ID, y=Abundance, fill=Genus)) + geom_bar(stat = "identity", width = 0.9) + facet_grid(time_point~., scales = "free") +  scale_fill_manual(values = mycols) +  theme(axis.title.x = element_blank(), axis.ticks.x=element_blank(), axis.text.x = element_text(angle = 90, vjust=0.5), strip.background =element_rect(fill="white"), strip.text.y=element_text(size=10, face = "bold")) + ylab("Relative abundance") + ggtitle("Nose") + scale_x_discrete(limits = positions)
+a 
+
+ggsave(filename="plots/Nose_bars_ordered_IDs.pdf", 
+       plot = a, 
+       device = cairo_pdf, 
+       width = 297, 
+       height = 210, 
+       units = "mm")
+```
+
+
+
+
+## **Groin**
+```{r }
+ps1_clean_groin <- prune_samples(sample_data(ps1_clean)$Sample_type == "Groin", ps1_clean) 
+ps1_clean_groin <- prune_taxa(taxa_sums(ps1_clean_groin) != 0, ps1_clean_groin)
+ps1_clean_groin
+sample_data(ps1_clean_groin)$Sample_type
+```
+
+## Number of patients with groin samples overall
+```{r}
+length(unique(sample_data(ps1_clean_groin)$Patient_ID))
+```
+
+## Which patients have both, a before and an after sample from the groin
+```{r }
+table(sample_data(ps1_clean_groin)$Patient_ID)
+```
+
+## Exclude 4 patients with only one time point
+
+```{r }
+ps1_clean_groin <- prune_samples(!sample_data(ps1_clean_groin)$Patient_ID %in% c("P12","P16", "P19", "P32"), ps1_clean_groin) 
+ps1_clean_groin
+```
+
+```{r }
+table(sample_data(ps1_clean_groin)$Patient_ID)
+length(unique(sample_data(ps1_clean_groin)$Patient_ID))
+```
+
+## Seq depth
+```{r}
+sdt = data.table::data.table(as(sample_data(ps1_clean_groin), "data.frame"),
+                 TotalReads = sample_sums(ps1_clean_groin), keep.rownames = TRUE)
+data.table::setnames(sdt, "rn", "SampleID")
+pSeqDepth = ggplot(sdt, aes(TotalReads)) + geom_histogram(binwidth = 250) +  geom_vline(xintercept = 5000, color= "red") + geom_text(aes(x=4550, label = paste("<5000: ",nrow(sdt[sdt$TotalReads<5000])), y=5.5), colour="red", angle=90) +   geom_text(aes(x=1550, label = paste("<2000: ",nrow(sdt[sdt$TotalReads<2000])), y=5.5), colour="orange", angle=90) + geom_vline(xintercept = 2000, color= "orange") + ggtitle("Sequencing depth GROIN") + theme(plot.title = element_text(size = 14, face = "bold")) 
+```
+
+
+```{r, fig.width=6}
+pSeqDepth
+```
+
+
+
+### Do the rarefaction curves justify that we remove samples with reads <1000 / <2000?
+
+##### Rarefaction curves
+```{r include=FALSE}
+set.seed(123)
+p3 <- ggrare(ps1_clean_groin, step = 100, se = FALSE, label = "Sample") 
+```
+
+```{r, fig.height=5, fig.width=8}
+p3 <- p3 + theme(panel.background = element_blank(), axis.title.x = element_text(size =14, face = "bold"), axis.title.y = element_text(size =14, face = "bold"), axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 12), legend.title = element_text(size = 16, face = "bold"), legend.text = element_text(size = 16), strip.text.x = element_text(angle = 0, face = "bold", size = 12), strip.background =element_rect(fill="white")) + xlab("Post-QC Post-contaminat removal library size per sample") + ylab("# of observed ASVs") + geom_vline(xintercept=5000, color = "red", size = 0.8) + geom_vline(xintercept=2000, color = "orange", size = 0.8) + geom_vline(xintercept=1000, color = "purple", size = 0.8) + geom_text(aes(x=4550, label="5000", y=120), colour="red", angle=90, size = 4) + geom_text(aes(x=1550, label="2000", y=120), colour="orange", angle=90, size = 4) + geom_text(aes(x=550, label="1000", y=120), colour="purple", angle=90, size = 4)
+p3
+```
+
+### Zoom
+```{r, fig.height=5, fig.width=8}
+p3 + xlim(0,10000)
+```
+
+
+
+## How do the rarefaction curves look on genus level? 
+##### Rarefaction curves
+```{r include=FALSE}
+ps1_clean_groin_gen <- tax_glom(ps1_clean_groin, taxrank="Genus")
+ps1_clean_groin_gen
+ps1_clean_groin_gen <- prune_taxa(taxa_sums(ps1_clean_groin_gen) != 0, ps1_clean_groin_gen)
+set.seed(123)
+p4 <- ggrare(ps1_clean_groin_gen, step = 100, se = FALSE, label = "Sample") 
+```
+
+```{r, fig.height=5, fig.width=8}
+p4 <- p4 + theme(panel.background = element_blank(), axis.title.x = element_text(size =14, face = "bold"), axis.title.y = element_text(size =14, face = "bold"), axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 12), legend.title = element_text(size = 16, face = "bold"), legend.text = element_text(size = 16), strip.text.x = element_text(angle = 0, face = "bold", size = 12), strip.background =element_rect(fill="white")) + xlab("Post-QC Post-contaminat removal library size per sample") + ylab("# of observed genera") + geom_vline(xintercept=5000, color = "red", size = 0.8) + geom_vline(xintercept=2000, color = "orange", size = 0.8) + geom_vline(xintercept=1000, color = "purple", size = 0.8) + geom_text(aes(x=4550, label="5000", y=80), colour="red", angle=90, size = 4) + geom_text(aes(x=1550, label="2000", y=80), colour="orange", angle=90, size = 4) + geom_text(aes(x=550, label="1000", y=80), colour="purple", angle=90, size = 4) 
+p4
+```
+
+### Zoom
+```{r, fig.height=5, fig.width=8}
+p4 + xlim(0,10000)
+```
+
+
+
+## Exclude samples with <2000 reads
+```{r}
+summary(sample_sums(ps1_clean_groin))
+ps1_clean_groin_tu <- prune_samples(!sample_sums(ps1_clean_groin) <2000, ps1_clean_groin) 
+ps1_clean_groin_tu
+summary(sample_sums(ps1_clean_groin_tu))
+```
+
+## Now how many patients still have both time points left after excluding samples <2000?
+```{r }
+table(sample_data(ps1_clean_groin_tu)$Patient_ID)
+length(unique(sample_data(ps1_clean_groin_tu)$Patient_ID))
+```
+
+
+```{r }
+ps1_clean_groin_tu <- prune_samples(!sample_data(ps1_clean_groin_tu)$Patient_ID %in% c("P02", "P06", "P20", "P21", "P22", "P23", "P26",  "P50", "P53", "P54", "P66", "P68", "P70", "P71", "P72", "P75", "P80", "P82"), ps1_clean_groin_tu) 
+ps1_clean_groin_tu
+```
+
+```{r}
+length(unique(sample_data(ps1_clean_groin_tu)$Patient_ID))
+```
+
+## 39 patients left with 2 time points for groin
+
+
+#### Read counts in the remaining patients with 2 samples >2000 reads
+```{r}
+summary(sample_sums(ps1_clean_groin_tu))
+```
+
+
+## Alpha diversity
+```{r}
+#### Add diversity measures to the phyloseq object as variables
+alpha_div_raw <- estimate_richness(ps1_clean_groin_tu, measures=c("Observed", "Chao1", "Shannon", "InvSimpson")) 
+rownames(alpha_div_raw) <- gsub("X", "", rownames(alpha_div_raw))
+ps1_clean_groin_tu <- merge_phyloseq(ps1_clean_groin_tu, sample_data(alpha_div_raw))
+df_ps1_clean_groin_tu <- as(sample_data(ps1_clean_groin_tu), "data.frame")
+```
+
+
+### Shannon diversity over time: 
+```{r}
+plot_g_Shannon <- ggplot(df_ps1_clean_groin_tu, aes(x = time_point, y = Shannon, fill=time_point)) + geom_boxplot(outlier.color="NA", alpha = 0.75) +  geom_dotplot(binaxis = "y", stackdir = "center", alpha = 0.9, position=position_dodge(0.75), dotsize = 0.75) + theme(axis.title.y = element_text(size=12, face = "bold"), axis.text.y = element_text(size=16), axis.text.x = element_text(size=14, face = "bold", angle = 0), axis.title.x = element_text(size=12, face = "bold"), legend.position = "none", panel.grid.major = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"), strip.text.x = element_text(angle = 0, face = "bold", size = 12), strip.text.y = element_text(angle = 0, face = "bold", size = 12), strip.background =element_rect(fill="white"), title = element_text(size = 14, face = "bold"))  + stat_boxplot(geom ='errorbar') + scale_fill_manual(values = c("#88a954","#2b5000")) + ggtitle("Alpha diversity - groin") 
+plot_g_Shannon
+
+ggsave(filename="plots/Groin_alpha_div_16S.pdf", 
+       plot = plot_g_Shannon, 
+       device = cairo_pdf, 
+       width = 297, 
+       height = 210, 
+       units = "mm")
+```
+
+
+#### Paired Wilcoxon signed rank test 
+```{r}
+df_ps1_clean_groin_tu_c <- dcast(df_ps1_clean_groin_tu, Patient_ID ~ time_point, value.var = "Shannon", drop = FALSE)
+wilcox.test(df_ps1_clean_groin_tu_c$A_before, df_ps1_clean_groin_tu_c$B_after, paired = TRUE)
+```
+Significant decrease in alpha diversity in the groin.
+
+
+
+
+## Agglomerate on Genus level
+```{r }
+rank_names(ps1_clean_groin_tu)
+ps1_clean_groin_tu_gs <- tax_glom(ps1_clean_groin_tu, taxrank="Genus")
+ps1_clean_groin_tu_gs
+ps1_clean_groin_tu_gs <- prune_taxa(taxa_sums(ps1_clean_groin_tu_gs) != 0, ps1_clean_groin_tu_gs)
+ps1_clean_groin_tu_gs
+rank_names(ps1_clean_groin_tu_gs)
+```
+
+
+
+## Convert to relative abundance 
+```{r }
+ps1_clean_groin_tu_gs_rel  <- transform_sample_counts(ps1_clean_groin_tu_gs, function(x) x / sum(x))
+summary(sample_sums(ps1_clean_groin_tu_gs_rel))
+```
+
+
+## Subset top 10 genera
+```{r }
+Genus10 = names(sort(taxa_sums(ps1_clean_groin_tu_gs_rel), TRUE)[1:10])
+```
+
+## to data frame
+```{r }
+p_df_o_groin <- psmelt(ps1_clean_groin_tu_gs_rel)
+p_df_o_groin$Genus <- as.character(p_df_o_groin$Genus)
+p_df_o_groin$Genus[!(p_df_o_groin$OTU %in% Genus10)] <- "Other"
+```
+
+
+
+### Barplots of relative abundance
+#### The patients are not in the same order here as in the heatmap, because in the heatmap they are ordered by clustering and here just by number (see ordered version below) 
+```{r}
+b <- ggplot(p_df_o_groin, aes(x=Patient_ID, y=Abundance, fill=Genus)) + geom_bar(stat = "identity", width = 0.9) + facet_grid(time_point~., scales = "free") +  scale_fill_manual(values = mycols) +  theme(axis.title.x = element_blank(), axis.ticks.x=element_blank(), axis.text.x = element_text(angle = 90, vjust=0.5), strip.background =element_rect(fill="white"), strip.text.y=element_text(size=10, face = "bold")) + ylab("Relative abundance")  + ggtitle("Groin")
+
+b
+```
+
+#### Patient-wise plots
+```{r}
+ggplot(p_df_o_groin, aes(x=time_point, y=Abundance, fill=Genus)) + geom_bar(stat = "identity", width = 0.9) + facet_wrap(.~Patient_ID, nrow=5) +  scale_fill_manual(values = mycols)  +  theme(axis.title.x = element_blank(), axis.ticks.x=element_blank(), axis.text.x = element_text(angle = 90, vjust=0.5), strip.background =element_rect(fill="white"), strip.text.y=element_text(size=10, face = "bold"), legend.position = "bottom") + ylab("Relative abundance")  + ggtitle("Groin")
+```
+
+
+### Subset the top 10 genera (without other)
+```{r }
+ps1_clean_groin_tu_gs_rel <- prune_taxa(taxa_names(ps1_clean_groin_tu_gs_rel) %in% Genus10, ps1_clean_groin_tu_gs_rel)
+ps1_clean_groin_tu_gs_rel
+```
+
+
+## to data frame
+```{r }
+p_df <- psmelt(ps1_clean_groin_tu_gs_rel)
+p_df_d <- dcast(p_df, Patient_ID + Genus ~ time_point, value.var = "Abundance", drop = FALSE)
+```
+
+## Calculate relative change in each patient for each species
+```{r }
+p_df_d <- p_df_d %>%  mutate(Percent_point_change = B_after - A_before)
+p_df_d$Percent_point_change  <- p_df_d$Percent_point_change*100
+```
+
+## to matrix
+```{r }
+p_df_d_m <- acast(p_df_d[,c(1,2,5)], Genus ~ Patient_ID, value.var = "Percent_point_change")
+```
+
+
+## Visualize in a heatmap
+```{r, fig.height=4, fig.width=10}
+pdf(file="plots/Groin_heatmap.pdf", width =  11.69 , height = 8.27)
+
+heatmap.2(p_df_d_m, scale = "none", col = bluered(100), trace = "none", density.info = "histogram", margin=c(6, 15), cexRow = 1.5, cexCol = 1, adjCol = 1, key.xlab = "Relative abundance change \nin percent points", keysize = 0.7, key.title = NA, main = "GROIN") 
+
+dev.off()
+```
+
+
+### Which of the top 10 genera do significantly change from before to after? 
+(Paired Wilcoxon test)
+```{r, warning=FALSE}
+wilc_dfG <- p_df_d %>% group_by(Genus) %>% summarise(wilcox_p_value=wilcox.test(A_before, B_after, paired=TRUE)$p.value) 
+
+wilc_dfG$BH_adjusted_wilcox_p_value <- p.adjust(wilc_dfG$wilcox_p_value, method = "BH")
+
+wilc_dfG
+```
+
+
+Corynebacterium and Porphyromonas have a significant _overall_ change in the groin.
+After multiple testing correction, only Coryne is significant (Yay, that actually fits with Thor's finding back in the days)
+
+#### Do they _overall_ decrease or increase?
+```{r}
+p_df_d %>% group_by(Genus) %>% summarise(Mean_percent_point_change = mean(B_after) - mean(A_before))
+```
+
+Corynebacterium and Porphyromonas decrease _overall_ in the groin.
+
+
+
+### Combine with tuf data:
+### Does change in the genus Staphylococcus correlate with change in individual Staph species?
+
+```{r}
+p_df_d_STAPH <- p_df_d %>% select(Patient_ID, Genus, Percent_point_change) %>% filter(Genus == "g__Staphylococcus") %>% select(Patient_ID, Percent_point_change) %>% dplyr::rename(g__Staphylococcus_percent_point_change=Percent_point_change)
+dim(p_df_d_STAPH)
+```
+
+
+```{r}
+p_df_d_tuf_groin <- read.table(file = "tables/p_df_d_tuf_groin.csv", sep=";", header=TRUE)
+p_df_d_tuf_groin <- p_df_d_tuf_groin %>% rename_at(vars(Staphylococcus_aureus:Staphylococcus_sciuri), function(x){paste0(x,"_percent_point_change")})
+dim(p_df_d_tuf_groin)
+
+## Subset to the same patients for which we have 16S data
+p_df_d_tuf_groin <- p_df_d_tuf_groin[p_df_d_tuf_groin$Patient_ID %in% p_df_d_STAPH$Patient_ID,]
+dim(p_df_d_tuf_groin)
+
+p_df_d_STAPH <- p_df_d_STAPH[p_df_d_STAPH$Patient_ID %in% p_df_d_tuf_groin$Patient_ID,]
+```
+
+```{r}
+p_df_d_STAPH1 <- left_join(p_df_d_STAPH, p_df_d_tuf_groin, by = "Patient_ID")
+dim(p_df_d_STAPH1)
+```
+
+#### For those patients that both have 16S and tuf data:
+
+#### Test Staph genus correlation with all Staph species:
+```{r}
+p_df_d_STAPH2 <- p_df_d_STAPH1 %>% pivot_longer(cols = starts_with("Staphylococcus"), names_to = "Species", values_to = "Percent_point_change")
+
+test_res <- p_df_d_STAPH2 %>% group_by(Species) %>% group_modify(~ broom::tidy(cor.test(~ g__Staphylococcus_percent_point_change + Percent_point_change, data = .x)))
+
+test_res$BH_adjusted_p_value <- p.adjust(test_res$p.value, method = "BH")
+test_res
+```
+
+Estimate is the Pearson's correlation coefficient. 
+
+```{r}
+test_res1 <- as.data.frame(test_res[,c("Species", "estimate", "BH_adjusted_p_value")])
+
+p_df_d_STAPH2 <- dplyr::left_join(p_df_d_STAPH2, test_res, by="Species")
+p_df_d_STAPH2 <- as.data.frame(p_df_d_STAPH2)
+
+
+p_df_d_STAPH2 <- p_df_d_STAPH2 %>% mutate_at(vars(BH_adjusted_p_value, estimate), round, 3)
+
+plots <- p_df_d_STAPH2 %>% group_by(Species) %>% do(plots=ggplot(data=.) +
+         aes(x=g__Staphylococcus_percent_point_change, y=Percent_point_change) +
+           ggtitle(paste0(unique(.$Species),", adj p = ",unique(.$BH_adjusted_p_value),", rho = ",unique(.$estimate))) +
+           geom_point() +
+           geom_smooth(method = "lm", se = FALSE) + geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+           theme(plot.title = element_text(size = 10)) +
+           geom_hline(yintercept = 0, color = "red", linetype = "dashed"))
+plots$plots
+
+pdf("plots/Staph_correlations_groin.pdf")
+for (i in 1:10) {
+    print(plots$plots[[i]])
+}
+dev.off()
+```
+
+
+
+#### Make a version of the barplots that has the same order of patients as the heatmap
+```{r include=FALSE}
+hmm <- heatmap.2(p_df_d_m)
+```
+
+```{r}
+positions <- rownames(hmm$carpet)
+
+a <- ggplot(p_df_o_groin, aes(x=Patient_ID, y=Abundance, fill=Genus)) + geom_bar(stat = "identity", width = 0.9) + facet_grid(time_point~., scales = "free") +  scale_fill_manual(values = mycols) +  theme(axis.title.x = element_blank(), axis.ticks.x=element_blank(), axis.text.x = element_text(angle = 90, vjust=0.5), strip.background =element_rect(fill="white"), strip.text.y=element_text(size=10, face = "bold")) + ylab("Relative abundance") + ggtitle("Nose") + scale_x_discrete(limits = positions)
+a 
+
+ggsave(filename="plots/Groin_bars_ordered_IDs.pdf", 
+       plot = a, 
+       device = cairo_pdf, 
+       width = 297, 
+       height = 210, 
+       units = "mm")
+```
+
+
+
+## **Operation_site**
+```{r }
+ps1_clean_operation_site <- prune_samples(sample_data(ps1_clean)$Sample_type == "Operation_site", ps1_clean) 
+ps1_clean_operation_site <- prune_taxa(taxa_sums(ps1_clean_operation_site) != 0, ps1_clean_operation_site)
+ps1_clean_operation_site
+sample_data(ps1_clean_operation_site)$Sample_type
+```
+
+## Number of patients with operation site samples overall
+```{r}
+length(unique(sample_data(ps1_clean_operation_site)$Patient_ID))
+```
+
+## Which patients have both, a before and an after sample from the operation_site
+```{r }
+table(sample_data(ps1_clean_operation_site)$Patient_ID)
+```
+
+```{r }
+ps1_clean_operation_site
+```
+
+```{r }
+table(sample_data(ps1_clean_operation_site)$Patient_ID)
+length(unique(sample_data(ps1_clean_operation_site)$Patient_ID))
+```
+
+## Seq depth
+```{r}
+sdt = data.table::data.table(as(sample_data(ps1_clean_operation_site), "data.frame"),
+                 TotalReads = sample_sums(ps1_clean_operation_site), keep.rownames = TRUE)
+data.table::setnames(sdt, "rn", "SampleID")
+pSeqDepth_OP = ggplot(sdt, aes(TotalReads)) + geom_histogram(binwidth = 250) +  
+geom_vline(xintercept = 5000, color= "red") +
+geom_vline(xintercept = 2000, color= "orange") +
+geom_vline(xintercept = 1000, color= "purple") +
+geom_text(aes(x=4550, label = paste("<5000: ",nrow(sdt[sdt$TotalReads<5000])), y=10), colour="red", angle=90) +  
+geom_text(aes(x=1550, label = paste("<2000: ",nrow(sdt[sdt$TotalReads<2000])), y=10), colour="orange", angle=90) +
+geom_text(aes(x=550, label = paste("<1000: ",nrow(sdt[sdt$TotalReads<1000])), y=10), colour="purple", angle=90) +
+ggtitle("Sequencing depth operation_site") + theme(plot.title = element_text(size = 14, face = "bold")) 
+```
+
+
+```{r, fig.width=6}
+pSeqDepth_OP
+```
+
+
+### Do the rarefaction curves justify that we remove samples with reads <1000 / <2000?
+
+##### Rarefaction curves
+```{r include=FALSE}
+set.seed(123)
+p7 <- ggrare(ps1_clean_operation_site, step = 100, se = FALSE, label = "Sample") 
+```
+
+```{r, fig.height=5, fig.width=8}
+p7 <- p7 + theme(panel.background = element_blank(), axis.title.x = element_text(size =14, face = "bold"), axis.title.y = element_text(size =14, face = "bold"), axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 12), legend.title = element_text(size = 16, face = "bold"), legend.text = element_text(size = 16), strip.text.x = element_text(angle = 0, face = "bold", size = 12), strip.background =element_rect(fill="white")) + xlab("Post-QC Post-contaminat removal library size per sample") + ylab("# of observed ASVs") + geom_vline(xintercept=5000, color = "red", size = 0.8) + geom_vline(xintercept=2000, color = "orange", size = 0.8) + geom_vline(xintercept=1000, color = "purple", size = 0.8) + geom_text(aes(x=4550, label="5000", y=120), colour="red", angle=90, size = 4) + geom_text(aes(x=1550, label="2000", y=120), colour="orange", angle=90, size = 4) + geom_text(aes(x=550, label="1000", y=120), colour="purple", angle=90, size = 4)
+p7
+```
+
+### Zoom
+```{r, fig.height=5, fig.width=8}
+p7 + xlim(0,10000)
+```
+
+
+
+## How do the rarefaction curves look on genus level? 
+##### Rarefaction curves
+```{r include=FALSE}
+ps1_clean_operation_site_gen <- tax_glom(ps1_clean_operation_site, taxrank="Genus")
+ps1_clean_operation_site_gen
+ps1_clean_operation_site_gen <- prune_taxa(taxa_sums(ps1_clean_operation_site_gen) != 0, ps1_clean_operation_site_gen)
+set.seed(123)
+p8 <- ggrare(ps1_clean_operation_site_gen, step = 100, se = FALSE, label = "Sample") 
+```
+
+```{r, fig.height=5, fig.width=8}
+p8 <- p8 + theme(panel.background = element_blank(), axis.title.x = element_text(size =14, face = "bold"), axis.title.y = element_text(size =14, face = "bold"), axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 12), legend.title = element_text(size = 16, face = "bold"), legend.text = element_text(size = 16), strip.text.x = element_text(angle = 0, face = "bold", size = 12), strip.background =element_rect(fill="white")) + xlab("Post-QC Post-contaminat removal library size per sample") + ylab("# of observed genera") + geom_vline(xintercept=5000, color = "red", size = 0.8) + geom_vline(xintercept=2000, color = "orange", size = 0.8) + geom_vline(xintercept=1000, color = "purple", size = 0.8) + geom_text(aes(x=4550, label="5000", y=80), colour="red", angle=90, size = 4) + geom_text(aes(x=1550, label="2000", y=80), colour="orange", angle=90, size = 4) + geom_text(aes(x=550, label="1000", y=80), colour="purple", angle=90, size = 4) 
+p8
+```
+
+### Zoom
+```{r, fig.height=5, fig.width=8}
+p8 + xlim(0,10000)
+```
+
+
+
+
+
+## Exclude samples with <2000 reads
+```{r}
+summary(sample_sums(ps1_clean_operation_site))
+ps1_clean_operation_site_tu <- prune_samples(!sample_sums(ps1_clean_operation_site) <2000, ps1_clean_operation_site) 
+ps1_clean_operation_site_tu
+summary(sample_sums(ps1_clean_operation_site_tu))
+```
+
+## Now how many patients still have both time points left?
+```{r }
+table(sample_data(ps1_clean_operation_site_tu)$Patient_ID)
+length(unique(sample_data(ps1_clean_operation_site_tu)$Patient_ID))
+```
+
+
+```{r eval=FALSE, }
+ps1_clean_operation_site_tu <- prune_samples(!sample_data(ps1_clean_operation_site_tu)$Patient_ID %in% c("P04","P17", "P30", "P31", "P63", "P77", "P78", "P79", "P80", "P81", "P82", "P83"), ps1_clean_operation_site_tu) 
+ps1_clean_operation_site_tu
+length(unique(sample_data(ps1_clean_operation_site_tu)$Patient_ID))
+```
+
+## 4 patients left with 2 time points
+
+
+
+#### Read counts in the remaining patients with 2 samples >2000 reads
+```{r}
+summary(sample_sums(ps1_clean_operation_site_tu))
+```
+
+
+##############################################################################################################################################################################################################################################################################################################################################################
+
+
+## **PCoA of Nose and Groin, before vs after surgery**
+
+```{r }
+ps_n_g <- merge_phyloseq(ps1_clean_nose_tu, ps1_clean_groin_tu)
+sample_data(ps_n_g)$group_tp <- paste(sample_data(ps_n_g)$Sample_type,sample_data(ps_n_g)$time_point)
+```
+
+### Hellinger transform before ordination
+```{r}
+ps_n_g_hell <- transform_sample_counts(ps_n_g, function(x) sqrt(x / sum(x)))
+```
+
+
+```{r }
+ps_n_g_ord <- ordinate(ps_n_g_hell, method = "PCoA", distance = "bray")
+```
+
+## PCoA
+### PCoA - Axis 1,2
+```{r}
+ord_plot <- plot_ordination(ps_n_g_hell, ps_n_g_ord, type="samples", color="group_tp", axes = 1:2)
+ord_plot <- ord_plot + stat_ellipse(geom = "polygon", type="t", alpha=0, aes(fill=group_tp)) + scale_color_brewer(palette = "Paired", type="div") + scale_fill_brewer(palette="Paired", type="div") 
+ord_plot
+
+ggsave(filename="plots/PCoA_Axis_1_2_16S.pdf", 
+       plot = ord_plot, 
+       device = cairo_pdf, 
+       width = 148, 
+       height = 105, 
+       units = "mm")
+```
+
+
+### PCoA - Axis 1,3
+```{r}
+ord_plot <- plot_ordination(ps_n_g_hell, ps_n_g_ord, type="samples", color="group_tp", axes = c(1,3))
+ord_plot + stat_ellipse(geom = "polygon", type="t", alpha=0, aes(fill=group_tp)) + scale_color_brewer(palette = "Paired", type="div") + scale_fill_brewer(palette="Paired", type="div") 
+```
+
+
+### PCoA - Axis 2,3
+```{r}
+ord_plot <- plot_ordination(ps_n_g_hell, ps_n_g_ord, type="samples", color="group_tp", axes = c(2,3))
+ord_plot + stat_ellipse(geom = "polygon", type="t", alpha=0, aes(fill=group_tp)) + scale_color_brewer(palette = "Paired", type="div") + scale_fill_brewer(palette="Paired", type="div") 
+```
+
+### Ordinate
+```{r }
+ps_n_g_ord <- ordinate(ps_n_g_hell, method = "NMDS", distance = "bray")#, k=10, trymax=40
+ps_n_g_ord
+```
+
+## NMDS
+```{r}
+ord_plot <- plot_ordination(ps_n_g, ps_n_g_ord, type="samples", color="group_tp")
+ord_plot + stat_ellipse(geom = "polygon", type="t", alpha=0, aes(fill=group_tp)) + scale_color_brewer(palette = "Paired", type="div") + scale_fill_brewer(palette="Paired", type="div") 
+```
+
+
+
+### Are the within group variations homogenous?
+```{r}
+df <- as(sample_data(ps_n_g_hell), "data.frame")
+
+bray_dist <- phyloseq::distance(ps_n_g_hell, method = "bray")
+
+bo <- betadisper(bray_dist, group = df$group_tp)
+anova(bo)
+```
+
+#### No, they are not (p<0.05), therefore the adonis() test needs to be interpreted with caution. 
+
+
+## **Permutational Multivariate Analysis of Variance Using Distance Matrices (adonis())**
+### Is the bacterial community different depending on group and time point?
+```{r}
+set.seed(123)
+vegan::adonis(bray_dist ~ group_tp, data= df)
+```
+
+
+#### P<0.05, therefore the bacterial community is different based on body site and time point.
+
+
+### Is the difference attributable to body site, time point or an interaction of both?
+```{r}
+set.seed(123)
+vegan::adonis2(bray_dist ~ Sample_type + time_point + Sample_type:time_point, data= df, strata = Patient_ID:time_point)
+```
+
+### The difference is driven by BOTH sample type and time point. BUT as mentioned, the groups have different within group variances and are therefore not really comparable by adonis. 
+
+
+## split the data by sample type and then check if there is a difference between time points within groups
+## Nose
+```{r}
+ps_n_g_hell_NOSE <-  prune_samples(sample_data(ps_n_g_hell)$Sample_type == "Nose", ps_n_g_hell) 
+ps_n_g_hell_NOSE <- prune_taxa(taxa_sums(ps_n_g_hell_NOSE) != 0, ps_n_g_hell_NOSE)
+
+df <- as(sample_data(ps_n_g_hell_NOSE), "data.frame")
+
+bray_dist <- phyloseq::distance(ps_n_g_hell_NOSE, method = "bray")
+
+bo <- betadisper(bray_dist, group = df$time_point)
+anova(bo)
+```
+
+### Within group variatons are not different, adonis can be used. 
+
+### Is the nasal community different depending on time point?
+```{r}
+set.seed(123)
+vegan::adonis(bray_dist ~ time_point, data= df)
+```
+
+
+## Nasal community is not different before and after 
+
+
+
+## Groin
+```{r}
+ps_n_g_hell_GROIN <-  prune_samples(sample_data(ps_n_g_hell)$Sample_type == "Groin", ps_n_g_hell) 
+ps_n_g_hell_GROIN <- prune_taxa(taxa_sums(ps_n_g_hell_GROIN) != 0, ps_n_g_hell_GROIN)
+
+df <- as(sample_data(ps_n_g_hell_GROIN), "data.frame")
+
+bray_dist <- phyloseq::distance(ps_n_g_hell_GROIN, method = "bray")
+
+bo <- betadisper(bray_dist, group = df$time_point)
+anova(bo)
+```
+
+### Within group variatons are different, so interpret adonis with caution. 
+
+### Is the groin community different depending on time point?
+```{r}
+set.seed(123)
+vegan::adonis(bray_dist ~ time_point, data= df)
+```
+
+## Groin community IS different before and after (but CAVE: different within group variations)
+
+
+
